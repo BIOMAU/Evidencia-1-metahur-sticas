@@ -1,0 +1,302 @@
+import math
+import time
+
+
+def leer_ttp(nombre_archivo):
+    """
+    Lee una instancia TTP en formato .ttp y extrae sus datos principales.
+    """
+    with open(nombre_archivo, "r", encoding="utf-8", errors="ignore") as f:
+        lineas = f.readlines()
+
+    nombre = ""
+    dimension = 0
+    numero_items = 0
+    capacidad = 0.0
+    velocidad_min = 0.0
+    velocidad_max = 0.0
+    renta = 0.0
+
+    coordenadas = {}
+    items = {}
+    items_por_ciudad = {}
+
+    seccion = ""
+
+    for linea in lineas:
+        linea = linea.strip()
+
+        if linea == "":
+            continue
+
+        if linea.startswith("PROBLEM NAME"):
+            nombre = linea.split(":", 1)[1].strip()
+        elif linea.startswith("DIMENSION"):
+            dimension = int(linea.split(":", 1)[1].strip())
+        elif linea.startswith("NUMBER OF ITEMS"):
+            numero_items = int(linea.split(":", 1)[1].strip())
+        elif linea.startswith("CAPACITY OF KNAPSACK"):
+            capacidad = float(linea.split(":", 1)[1].strip())
+        elif linea.startswith("MIN SPEED"):
+            velocidad_min = float(linea.split(":", 1)[1].strip())
+        elif linea.startswith("MAX SPEED"):
+            velocidad_max = float(linea.split(":", 1)[1].strip())
+        elif linea.startswith("RENTING RATIO"):
+            renta = float(linea.split(":", 1)[1].strip())
+        elif linea.startswith("NODE_COORD_SECTION"):
+            seccion = "coordenadas"
+        elif linea.startswith("ITEMS SECTION"):
+            seccion = "items"
+        elif linea.startswith("EOF"):
+            break
+        else:
+            partes = linea.split()
+
+            if seccion == "coordenadas" and len(partes) >= 3:
+                ciudad = int(partes[0])
+                x = float(partes[1])
+                y = float(partes[2])
+                coordenadas[ciudad] = (x, y)
+
+            elif seccion == "items" and len(partes) >= 4:
+                idx = int(partes[0])
+                beneficio = float(partes[1])
+                peso = float(partes[2])
+                ciudad = int(partes[3])
+
+                items[idx] = (beneficio, peso, ciudad)
+
+                if ciudad not in items_por_ciudad:
+                    items_por_ciudad[ciudad] = []
+
+                items_por_ciudad[ciudad].append((idx, beneficio, peso))
+
+    return {
+        "nombre": nombre,
+        "dimension": dimension,
+        "numero_items": numero_items,
+        "capacidad": capacidad,
+        "velocidad_min": velocidad_min,
+        "velocidad_max": velocidad_max,
+        "renta": renta,
+        "coordenadas": coordenadas,
+        "items": items,
+        "items_por_ciudad": items_por_ciudad
+    }
+
+
+def hacer_distancias(instancia):
+    """
+    Construye la matriz de distancias euclidianas redondeadas hacia arriba
+    entre todas las ciudades.
+    """
+    n = instancia["dimension"]
+    coords = instancia["coordenadas"]
+
+    dist = [[0] * (n + 1) for _ in range(n + 1)]
+
+    for i in range(1, n + 1):
+        for j in range(1, n + 1):
+            if i != j:
+                x1, y1 = coords[i]
+                x2, y2 = coords[j]
+                dist[i][j] = math.ceil(math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2))
+
+    return dist
+
+
+def vecino_mas_cercano_modificado(instancia, distancias, alpha=1.0):
+    """
+    Construye una solución inicial para el TTP mediante un vecino más cercano
+    modificado que considera distancia y atractivo de objetos factibles.
+    Devuelve una ruta inicial y un plan de recolección.
+    """
+    n = instancia["dimension"]
+    ruta = [1]
+    no_visitadas = list(range(2, n + 1))
+    plan = [0] * (instancia["numero_items"] + 1)
+
+    ciudad_actual = 1
+    peso_actual = 0.0
+
+    # Selección inicial de objetos en la ciudad de inicio
+    if ciudad_actual in instancia["items_por_ciudad"]:
+        lista = instancia["items_por_ciudad"][ciudad_actual][:]
+        lista.sort(key=lambda x: x[1] / x[2], reverse=True)
+
+        for item in lista:
+            idx, beneficio, peso = item
+            if peso_actual + peso <= instancia["capacidad"]:
+                plan[idx] = ciudad_actual
+                peso_actual += peso
+
+    # Construcción de la ruta y del plan de recolección
+    while len(no_visitadas) > 0:
+        mejor_ciudad = None
+        mejor_score = float("inf")
+
+        for ciudad in no_visitadas:
+            atractivo = 0.0
+            capacidad_restante = instancia["capacidad"] - peso_actual
+
+            if ciudad in instancia["items_por_ciudad"]:
+                for item in instancia["items_por_ciudad"][ciudad]:
+                    idx, beneficio, peso = item
+
+                    if plan[idx] == 0 and peso <= capacidad_restante:
+                        ratio = beneficio / peso
+                        if ratio > atractivo:
+                            atractivo = ratio
+
+            score = distancias[ciudad_actual][ciudad] - alpha * atractivo
+
+            if score < mejor_score:
+                mejor_score = score
+                mejor_ciudad = ciudad
+
+        ruta.append(mejor_ciudad)
+        no_visitadas.remove(mejor_ciudad)
+        ciudad_actual = mejor_ciudad
+
+        # Selección voraz de objetos en la nueva ciudad visitada
+        if ciudad_actual in instancia["items_por_ciudad"]:
+            lista = instancia["items_por_ciudad"][ciudad_actual][:]
+            lista.sort(key=lambda x: x[1] / x[2], reverse=True)
+
+            for item in lista:
+                idx, beneficio, peso = item
+                if plan[idx] == 0 and peso_actual + peso <= instancia["capacidad"]:
+                    plan[idx] = ciudad_actual
+                    peso_actual += peso
+
+    return ruta, plan
+
+
+def evaluar_solucion(instancia, distancias, ruta, plan):
+    """
+    calculo de:
+    - valor objetivo,
+    - beneficio total,
+    - peso total,
+    - tiempo total del recorrido.
+    """
+    beneficio_total = 0.0
+    tiempo_total = 0.0
+    peso_actual = 0.0
+
+    tomados_por_ciudad = {}
+
+    # Agrupar objetos tomados por ciudad y sumar beneficio
+    for idx in range(1, instancia["numero_items"] + 1):
+        ciudad = plan[idx]
+        if ciudad != 0:
+            beneficio, peso, _ = instancia["items"][idx]
+            beneficio_total += beneficio
+
+            if ciudad not in tomados_por_ciudad:
+                tomados_por_ciudad[ciudad] = []
+
+            tomados_por_ciudad[ciudad].append((beneficio, peso))
+
+    n = len(ruta)
+
+    # Recorrer la ruta considerando el peso acumulado y la velocidad variable
+    for i in range(n):
+        actual = ruta[i]
+
+        if actual in tomados_por_ciudad:
+            for obj in tomados_por_ciudad[actual]:
+                beneficio, peso = obj
+                peso_actual += peso
+
+        siguiente = ruta[(i + 1) % n]
+
+        velocidad = instancia["velocidad_max"] - (
+            peso_actual * (instancia["velocidad_max"] - instancia["velocidad_min"]) / instancia["capacidad"]
+        )
+
+        if velocidad < instancia["velocidad_min"]:
+            velocidad = instancia["velocidad_min"]
+
+        tiempo_total += distancias[actual][siguiente] / velocidad
+
+    valor = beneficio_total - instancia["renta"] * tiempo_total
+
+    return valor, beneficio_total, peso_actual, tiempo_total
+
+
+def two_opt(instancia, distancias, ruta, plan):
+    """
+    Aplica búsqueda local 2-opt sobre la ruta.
+    El plan de recolección permanece fijo durante la mejora.
+    """
+    mejor_ruta = ruta[:]
+    mejor_valor, mejor_beneficio, mejor_peso, mejor_tiempo = evaluar_solucion(
+        instancia, distancias, mejor_ruta, plan
+    )
+
+    mejoro = True
+
+    while mejoro:
+        mejoro = False
+
+        for i in range(1, len(mejor_ruta) - 1):
+            for j in range(i + 1, len(mejor_ruta)):
+                nueva_ruta = mejor_ruta[:]
+                nueva_ruta[i:j + 1] = list(reversed(nueva_ruta[i:j + 1]))
+
+                nuevo_valor, nuevo_beneficio, nuevo_peso, nuevo_tiempo = evaluar_solucion(
+                    instancia, distancias, nueva_ruta, plan
+                )
+
+                if nuevo_valor > mejor_valor:
+                    mejor_ruta = nueva_ruta
+                    mejor_valor = nuevo_valor
+                    mejor_beneficio = nuevo_beneficio
+                    mejor_peso = nuevo_peso
+                    mejor_tiempo = nuevo_tiempo
+                    mejoro = True
+                    break
+
+            if mejoro:
+                break
+
+    return mejor_ruta, mejor_valor, mejor_beneficio, mejor_peso, mejor_tiempo
+
+
+def main():
+    """
+    Ejecuta el algoritmo heurístico combinado sobre una instancia TTP
+    y muestra los resultados obtenidos.
+    """
+    archivo = "rat99_n98_uncorr_01.ttp"
+    inicio = time.time()
+
+    instancia = leer_ttp(archivo)
+    distancias = hacer_distancias(instancia)
+    ruta_inicial, plan = vecino_mas_cercano_modificado(instancia, distancias, 1.0)
+
+    valor_inicial, beneficio_inicial, peso_inicial, tiempo_inicial = evaluar_solucion(
+        instancia, distancias, ruta_inicial, plan
+    )
+
+    mejor_ruta, valor_final, beneficio_final, peso_final, tiempo_final = two_opt(
+        instancia, distancias, ruta_inicial, plan
+    )
+
+    fin = time.time()
+
+    print("\nRESULTADOS")
+    print("Instancia:", instancia["nombre"])
+    print("Ciudades:", instancia["dimension"])
+    print("Ítems:", instancia["numero_items"])
+    print("Valor objetivo inicial:", round(valor_inicial, 4))
+    print("Valor objetivo final:", round(valor_final, 4))
+    print("Beneficio total:", round(beneficio_final, 4))
+    print("Peso total:", round(peso_final, 4))
+    print("Tiempo total del tour:", round(tiempo_final, 4))
+    print("Tiempo de ejecución:", round(fin - inicio, 4), "s")
+
+
+if __name__ == "__main__":
+    main()
